@@ -1,4 +1,4 @@
-mod chacha20_v1;
+mod chacha20_circuit_v1;
 pub mod constants;
 pub mod utilities;
 

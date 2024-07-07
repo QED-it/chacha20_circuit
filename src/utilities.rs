@@ -1,12 +1,11 @@
-use crate::chacha20_v1::ChaCha20Circuit;
+use crate::chacha20_circuit_v1::ChaCha20Circuit;
 use crate::constants::{BINARY_LENGTH, STATE_LENGTH};
 use ff::Field;
 use halo2_proofs::circuit::Value;
 use halo2_proofs::dev::MockProver;
 use halo2_proofs::pasta::{EqAffine, Fp};
 use halo2_proofs::plonk::{
-    create_proof, keygen_pk, keygen_vk, verify_proof, Error, ProvingKey, SingleVerifier,
-    VerifyingKey,
+    create_proof, keygen_pk, keygen_vk, verify_proof, ProvingKey, SingleVerifier, VerifyingKey,
 };
 use halo2_proofs::poly::commitment::Params;
 use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
@@ -20,7 +19,17 @@ pub fn draw_circuit<F: Field>(k: u32, circuit: &ChaCha20Circuit<F>) {
     let base = base.titled("ChaCha20 Circuit", ("sans-serif", 24)).unwrap();
 
     halo2_proofs::dev::CircuitLayout::default()
-        .show_equality_constraints(true)
+        // You can optionally render only a section of the circuit.
+        // .view_width(0..2)
+        // .view_height(0..16)
+        // You can hide labels, which can be useful with smaller areas.
+        .show_labels(true)
+        // Draws red lines between equality-constrained cells.
+        .show_equality_constraints(false)
+        // Marks cells involved in equality constraints, in red.
+        .mark_equality_cells(false)
+        // Render the circuit onto your area!
+        // The first argument is the size parameter for the circuit.
         .render(k, circuit, &base)
         .unwrap();
 }
@@ -142,11 +151,17 @@ pub fn verify(
     vk: &VerifyingKey<EqAffine>,
     pub_input: &Vec<Fp>,
     proof: Vec<u8>,
-) -> Result<(), Error> {
+) {
     println!("Verifying proof...");
     let strategy = SingleVerifier::new(params);
     let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
-    verify_proof(params, vk, strategy, &[&[pub_input]], &mut transcript)
+    match verify_proof(params, vk, strategy, &[&[pub_input]], &mut transcript) {
+        Ok(()) => println!("The statement is TRUE"),
+        Err(error) => {
+            println!("The statement is FALSE.");
+            println!("ERROR: {}", error);
+        }
+    }
 }
 
 /// data transformation

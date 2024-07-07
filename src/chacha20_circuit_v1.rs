@@ -62,6 +62,7 @@ trait Instructions<F: Field>: Chip<F> {
 }
 
 // The chip which holds the circuit config
+
 pub struct ChaCha20Chip<F: Field> {
     config: ChaCha20Config,
     _marker: PhantomData<F>,
@@ -529,7 +530,7 @@ impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub struct ChaCha20Circuit<F: Field> {
     pub(crate) init_state: Vec<[Value<F>; BINARY_LENGTH]>,
     pub(crate) plaintexts: Vec<[Value<F>; BINARY_LENGTH]>,
