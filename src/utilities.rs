@@ -1,5 +1,5 @@
-use crate::chacha20_circuit_v1::ChaCha20Circuit;
-use crate::constants::{BINARY_LENGTH, STATE_LENGTH};
+use crate::chacha20_circuit::ChaCha20Circuit;
+use crate::constants::{BINARY_LENGTH, INIT_CONSTANTS};
 use ff::Field;
 use halo2_proofs::circuit::Value;
 use halo2_proofs::dev::MockProver;
@@ -9,9 +9,11 @@ use halo2_proofs::plonk::{
 };
 use halo2_proofs::poly::commitment::Params;
 use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
+use pasta_curves::vesta;
 use rand_core::OsRng;
+use std::time::Instant;
 
-// Draws the layout of the circuit. Super useful for debugging.
+// Draws the layout of the circuit.
 pub fn draw_circuit<F: Field>(k: u32, circuit: &ChaCha20Circuit<F>) {
     use plotters::prelude::*;
     let base = BitMapBackend::new("layout.png", (2600, 1600)).into_drawing_area();
@@ -23,7 +25,7 @@ pub fn draw_circuit<F: Field>(k: u32, circuit: &ChaCha20Circuit<F>) {
         // .view_width(0..2)
         // .view_height(0..16)
         // You can hide labels, which can be useful with smaller areas.
-        .show_labels(true)
+        .show_labels(false)
         // Draws red lines between equality-constrained cells.
         .show_equality_constraints(false)
         // Marks cells involved in equality constraints, in red.
@@ -34,36 +36,51 @@ pub fn draw_circuit<F: Field>(k: u32, circuit: &ChaCha20Circuit<F>) {
         .unwrap();
 }
 
-// Generates an empty circuit. Useful for generating the proving/verifying keys.
-pub fn empty_circuit() -> ChaCha20Circuit<Fp> {
-    let unknown_input = [Value::unknown(); BINARY_LENGTH];
-    let unknown_output = [Value::unknown(); BINARY_LENGTH];
-
-    ChaCha20Circuit {
-        init_state: vec![unknown_input; STATE_LENGTH], // Populate the vector with STATE_LENGTH unknown state arrays
-        plaintexts: vec![unknown_input; STATE_LENGTH], // Populate the vector with STATE_LENGTH unknown state arrays
-        ciphertexts: vec![unknown_output; STATE_LENGTH], // Same for outputs
-    }
-}
-
-// Creates a circuit from the initial state, plaintext and ciphertext
+// Creates a circuit from the constant and witness (key, nonce and plaintext)
 pub fn create_circuit(
-    init_state: Vec<Vec<u64>>,
-    plaintext: Vec<Vec<u64>>,
-    ciphertext: Vec<Vec<u64>>,
+    key: Vec<Vec<bool>>,
+    nonce: Vec<Vec<bool>>,
+    plaintext: Vec<Vec<bool>>,
 ) -> ChaCha20Circuit<Fp> {
-    let mut state = Vec::new();
-    for i in init_state {
-        let i_vec: [Value<Fp>; BINARY_LENGTH] = i
+    // constant to the ChaCha20Circuit
+    // INIT_CONSTANTS is the constant used to set up the initial state
+    let mut constants = Vec::new();
+    let constant_vectors: Vec<Vec<bool>> = u32_to_binary(&INIT_CONSTANTS);
+
+    for c in constant_vectors {
+        let c_vec: [Fp; BINARY_LENGTH] = c
+            .clone()
+            .iter()
+            .map(|f| Fp::from(*f))
+            .collect::<Vec<Fp>>()
+            .try_into()
+            .unwrap();
+        constants.push(c_vec);
+    }
+
+    let mut keys = Vec::new();
+    for k in key {
+        let k_vec: [Value<Fp>; BINARY_LENGTH] = k
             .clone()
             .iter()
             .map(|f| Value::known(Fp::from(*f)))
             .collect::<Vec<Value<Fp>>>()
             .try_into()
             .unwrap();
-        state.push(i_vec);
+        keys.push(k_vec);
     }
 
+    let mut nonces = Vec::new();
+    for n in nonce {
+        let n_vec: [Value<Fp>; BINARY_LENGTH] = n
+            .clone()
+            .iter()
+            .map(|f| Value::known(Fp::from(*f)))
+            .collect::<Vec<Value<Fp>>>()
+            .try_into()
+            .unwrap();
+        nonces.push(n_vec);
+    }
     let mut plaintexts = Vec::new();
 
     for p in plaintext {
@@ -77,24 +94,33 @@ pub fn create_circuit(
         plaintexts.push(p_vec);
     }
 
-    let mut ciphertexts = Vec::new();
+    // Create circuit from constants and witness (key, nonce, plaintext)
+    ChaCha20Circuit {
+        constants,
+        keys,
+        nonces,
+        plaintexts,
+    }
+}
+
+// Convert the public input to a halo2 instance
+pub fn to_halo2_instance(ciphertext: Vec<Vec<bool>>) -> Vec<Fp> {
+    let mut instance: Vec<Fp> = Vec::new();
+
     for c in ciphertext {
-        let c_vec: [Value<Fp>; BINARY_LENGTH] = c
+        let c_vec: [Fp; BINARY_LENGTH] = c
             .clone()
             .iter()
-            .map(|f| Value::known(Fp::from(*f)))
-            .collect::<Vec<Value<Fp>>>()
+            .map(|f| Fp::from(*f))
+            .collect::<Vec<Fp>>()
             .try_into()
             .unwrap();
-        ciphertexts.push(c_vec);
+        for i in c_vec {
+            instance.push(i);
+        }
     }
 
-    // Create circuit from inputs
-    ChaCha20Circuit {
-        init_state: state,
-        plaintexts,
-        ciphertexts,
-    }
+    instance
 }
 
 // Generates setup parameters using k, which is the number of rows of the circuit
@@ -103,25 +129,15 @@ pub fn generate_setup_params(k: u32) -> Params<EqAffine> {
     Params::<EqAffine>::new(k)
 }
 
-// Generates the verifying and proving keys. We can pass in an empty circuit to generate these
+// Generates the verifying and proving keys.
 pub fn generate_keys(
     params: &Params<EqAffine>,
     circuit: &ChaCha20Circuit<Fp>,
 ) -> (ProvingKey<EqAffine>, VerifyingKey<EqAffine>) {
-    // just to emphasize that for vk, pk we don't need to know the value of `x`
+    // just to emphasize that for vk, pk we don't need to know the value of witness
     let vk = keygen_vk(params, circuit).expect("vk should not fail");
     let pk = keygen_pk(params, vk.clone(), circuit).expect("pk should not fail");
     (pk, vk)
-}
-
-// Runs the mock prover and prints any errors
-pub fn run_mock_prover(k: u32, circuit: &ChaCha20Circuit<Fp>, pub_input: Vec<Vec<Fp>>) {
-    let prover = MockProver::run(k, circuit, pub_input).expect("Mock prover should run");
-    let res = prover.verify();
-    match res {
-        Ok(()) => println!("MockProver OK"),
-        Err(e) => println!("err {:#?}", e),
-    }
 }
 
 // Generates a proof
@@ -131,7 +147,6 @@ pub fn generate_proof(
     circuit: ChaCha20Circuit<Fp>,
     pub_input: &Vec<Fp>,
 ) -> Vec<u8> {
-    println!("Generating proof...");
     let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
     create_proof(
         params,
@@ -152,7 +167,6 @@ pub fn verify(
     pub_input: &Vec<Fp>,
     proof: Vec<u8>,
 ) {
-    println!("Verifying proof...");
     let strategy = SingleVerifier::new(params);
     let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
     match verify_proof(params, vk, strategy, &[&[pub_input]], &mut transcript) {
@@ -164,37 +178,72 @@ pub fn verify(
     }
 }
 
-/// data transformation
-pub fn hex_to_binary(hex: &[&str]) -> Vec<Vec<u64>> {
-    // Convert hex strings to u32
-    let u32_state_values: Vec<u32> = hex
-        .iter()
-        .map(|&hex| u32::from_str_radix(hex, 16).expect("Invalid hex input"))
-        .collect();
-
-    // Convert each u32 to a binary vector
-    let init_state_vectors: Vec<Vec<u64>> = u32_state_values
-        .iter()
-        .map(|&num| {
-            format!("{:032b}", num) // Ensure each number is represented as a 32-bit binary string
-                .chars()
-                .map(|c| c.to_digit(10).expect("Should be a digit") as u64)
-                .collect()
-        })
-        .collect();
-    init_state_vectors
+// Runs the mock prover and prints any errors
+pub fn run_mock_prover(k: u32, circuit: &ChaCha20Circuit<Fp>, pub_input: Vec<Fp>) {
+    let prover = MockProver::run(k, circuit, vec![pub_input]).expect("Mock prover should run");
+    let res = prover.verify();
+    match res {
+        Ok(()) => println!("MockProver OK"),
+        Err(e) => println!("err {:#?}", e),
+    }
 }
 
-pub fn u32_to_binary(u32_vec: &[u32; 16]) -> Vec<Vec<u64>> {
+// Runs the negative test using mock prover and prints the result
+pub fn run_negative_test(k: u32, circuit: &ChaCha20Circuit<Fp>, pub_input: Vec<Fp>) {
+    let prover = MockProver::run(k, circuit, vec![pub_input]).expect("Mock prover should run");
+    let res = prover.verify();
+    match res {
+        Ok(()) => println!("Negative test fails"),
+        Err(_) => println!("Negative test OK"),
+    }
+}
+
+// Runs the plonk prover and prints any errors
+pub fn run_plonk_prover(k: u32, circuit: &ChaCha20Circuit<Fp>, pub_input: Vec<Fp>) {
+    // Generate setup params
+    let params = generate_setup_params(k);
+
+    // Generate proving and verifying keys
+    let (pk, vk) = generate_keys(&params, circuit);
+
+    // Generate proof
+    let start_proof = Instant::now(); // Start timing
+    let proof = generate_proof(&params, &pk, circuit.clone(), &pub_input);
+    println!("Proof length: {} Bytes", proof.len());
+    let duration_proof = start_proof.elapsed(); // Calculate elapsed time
+    println!("Proof creation time: {:?}", duration_proof);
+
+    // Verify proof
+    let start_verify = Instant::now(); // Start timing
+    verify(&params, &vk, &pub_input, proof);
+    let duration_verify = start_verify.elapsed(); // Calculate elapsed time
+    println!("Verification time: {:?}", duration_verify);
+
+    // Calculate the circuit cost
+    let circuit_cost = halo2_proofs::dev::CircuitCost::<vesta::Point, _>::measure(k, circuit);
+    println!("Circuit cost: {:?}", circuit_cost);
+}
+
+/// data transformation
+pub fn u32_to_binary(u32_vec: &[u32]) -> Vec<Vec<bool>> {
     // Convert each u32 to a binary vector
-    let init_state_vectors: Vec<Vec<u64>> = u32_vec
+    u32_vec
         .iter()
         .map(|&num| {
             format!("{:032b}", num) // Ensure each number is represented as a 32-bit binary string
                 .chars()
-                .map(|c| c.to_digit(10).expect("Should be a digit") as u64)
+                .map(|c| c.to_digit(10).expect("Should be a bool") != 0)
                 .collect()
         })
-        .collect();
-    init_state_vectors
+        .collect()
+}
+
+pub fn u8_to_u32<const N: usize>(ciphertext: &[u8]) -> [u32; N] {
+    let mut u32s: [u32; N] = [0; N];
+
+    // Convert every 4 bytes of the u8 array into a single u32 using little-endian format
+    for (i, chunk) in ciphertext.chunks(4).take(N).enumerate() {
+        u32s[i] = u32::from_le_bytes(chunk.try_into().expect("slice with incorrect size"));
+    }
+    u32s
 }

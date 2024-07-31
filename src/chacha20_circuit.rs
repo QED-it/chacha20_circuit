@@ -1,4 +1,7 @@
-use crate::constants::{BINARY_LENGTH, ROTATION_LENGTHS, STATE_LENGTH};
+use crate::constants::{
+    BINARY_LENGTH, CONSTANT_LENGTH, KEY_LENGTH, NONCE_LENGTH, ROTATION_LENGTHS, STATE_LENGTH,
+};
+use halo2_proofs::plonk::{Fixed, Instance};
 use halo2_proofs::{
     arithmetic::Field,
     circuit::{AssignedCell, Chip, Layouter, Region, SimpleFloorPlanner, Value},
@@ -18,6 +21,13 @@ trait Instructions<F: Field>: Chip<F> {
         value: [Value<F>; BINARY_LENGTH],
     ) -> Result<Vec<Self::Num>, Error>;
 
+    // Loads constant inputs into the circuit as fixed constants.
+    fn load_constant(
+        &self,
+        layouter: impl Layouter<F>,
+        constants: [F; BINARY_LENGTH],
+    ) -> Result<Vec<Self::Num>, Error>;
+
     // Performs an XOR operation between two field elements of BINARY_LENGTH bits
     fn xor(
         &self,
@@ -26,7 +36,7 @@ trait Instructions<F: Field>: Chip<F> {
         b: Vec<Self::Num>,
     ) -> Result<Vec<Self::Num>, Error>;
 
-    // Performs a left rotation operation for one field element, rotate l bits
+    // Performs a left rotation operation for one field element, left rotate l bits
     fn left_rotate_l(
         &self,
         layouter: impl Layouter<F>,
@@ -42,14 +52,15 @@ trait Instructions<F: Field>: Chip<F> {
         b: Vec<Self::Num>,
     ) -> Result<Vec<Self::Num>, Error>;
 
-    // Check that two field elements are equal
-    fn check_result(
+    // Check that elements in the vector num is equal to public inputs start from start_index.
+    fn expose_public(
         &self,
         layouter: impl Layouter<F>,
-        a: Vec<Self::Num>,
-        b: Vec<Self::Num>,
+        start: usize,
+        num: Vec<Self::Num>,
     ) -> Result<(), Error>;
 
+    // An algorithm in chacha20 encryption
     fn quarter_round(
         &self,
         layouter: impl Layouter<F>,
@@ -86,6 +97,7 @@ impl<F: Field> Chip<F> for ChaCha20Chip<F> {
 pub struct ChaCha20Config {
     // We have BINARY_LENGTH advice columns
     advice: [Column<Advice>; BINARY_LENGTH],
+    instance: Column<Instance>,
 
     // Selectors for choosing which operation to run at each row
     s_binary: Selector,
@@ -105,11 +117,16 @@ impl<F: Field> ChaCha20Chip<F> {
     fn configure(
         meta: &mut ConstraintSystem<F>,
         advice: [Column<Advice>; BINARY_LENGTH],
+        instance: Column<Instance>,
+        constant: Column<Fixed>,
     ) -> <Self as Chip<F>>::Config {
         // The selectors we'll be using in the circuit
         let s_binary = meta.selector();
         let s_xor = meta.selector();
         let s_wrapping_add = meta.selector();
+
+        meta.enable_equality(instance);
+        meta.enable_constant(constant);
 
         for i in 0..BINARY_LENGTH {
             // Enable checking of equality for each of the columns
@@ -123,7 +140,7 @@ impl<F: Field> ChaCha20Chip<F> {
                 vec![s_binary * (value.clone() * (Expression::Constant(F::ONE) - value))]
             });
 
-            // This gate performs an XOR operation between two cells and outputs the the result to a third cell
+            // This gate performs an XOR operation between two cells and outputs the result to a third cell
             meta.create_gate("xor", |meta| {
                 let a = meta.query_advice(advice[i], Rotation::prev());
                 let b = meta.query_advice(advice[i], Rotation::cur());
@@ -139,7 +156,7 @@ impl<F: Field> ChaCha20Chip<F> {
                 ]
             });
 
-            // This gate performs a wrapping add operation between two cells and outputs the the result to a third cell
+            // This gate performs a wrapping add operation between two cells and outputs the result to a third cell
             meta.create_gate("wrapping add", |meta| {
                 let a = meta.query_advice(advice[BINARY_LENGTH - 1 - i], Rotation::prev());
                 let b = meta.query_advice(advice[BINARY_LENGTH - 1 - i], Rotation::cur());
@@ -195,6 +212,7 @@ impl<F: Field> ChaCha20Chip<F> {
 
         ChaCha20Config {
             advice,
+            instance,
             s_binary,
             s_xor,
             s_wrapping_add,
@@ -207,12 +225,12 @@ impl<F: Field> ChaCha20Chip<F> {
 #[derive(Clone, Debug)]
 struct Number<F: Field>(AssignedCell<F, F>);
 
-// Implement all of the chip traits. In this section, we'll be describing how Layouter will assign values to
+// Implement all chip traits. In this section, we'll be describing how Layouter will assign values to
 // various cells in the circuit.
 impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
     type Num = Number<F>;
 
-    // Loads private inputs into two advice columns and checks if the digits are binary values
+    // Loads private inputs into advice columns and checks if the digits are binary values
     fn load_private_and_check_binary(
         &self,
         mut layouter: impl Layouter<F>,
@@ -240,6 +258,35 @@ impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
                             .map(Number)
                     })
                     .collect()
+            },
+        )
+    }
+
+    // Loads constant inputs into the circuit as fixed constants.
+    fn load_constant(
+        &self,
+        mut layouter: impl Layouter<F>,
+        constants: [F; BINARY_LENGTH],
+    ) -> Result<Vec<Self::Num>, Error> {
+        let config = self.config();
+
+        layouter.assign_region(
+            || "load constant",
+            |mut region| {
+                let mut results = Vec::with_capacity(BINARY_LENGTH);
+
+                for (i, &constant) in constants.iter().enumerate() {
+                    let result = region
+                        .assign_advice_from_constant(
+                            || "constant value",
+                            config.advice[i],
+                            0,
+                            constant,
+                        )
+                        .map(Number)?;
+                    results.push(result);
+                }
+                Ok(results)
             },
         )
     }
@@ -339,7 +386,7 @@ impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
     }
 
     // Performs a wrapping add operation between two field elements a and b (decomposed)
-    // the addition start from the right side bits
+    // the addition start from the right most bit
     fn wrapping_add(
         &self,
         mut layouter: impl Layouter<F>,
@@ -355,7 +402,7 @@ impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
 
                 let mut results = Vec::new();
 
-                // Set the initial carry value to be 0, assign it to to the 31-th column of 'carry'
+                // Set the initial carry value to be 0, assign it to the 31-th column of 'carry'
                 let carry_init = Value::known(F::ZERO);
                 let mut carry = region
                     .assign_advice(|| "carry", config.advice[31], 3, || carry_init)
@@ -435,22 +482,18 @@ impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
         )
     }
 
-    // Check that a is equal to b.
-    fn check_result(
+    // Check that elements in the vector num is equal to public inputs start from start_index.
+    fn expose_public(
         &self,
         mut layouter: impl Layouter<F>,
-        a: Vec<Self::Num>,
-        b: Vec<Self::Num>,
+        start_index: usize,
+        num: Vec<Self::Num>,
     ) -> Result<(), Error> {
-        layouter.assign_region(
-            || "equal",
-            |mut region| {
-                for (a_val, b_val) in a.iter().zip(b.iter()) {
-                    region.constrain_equal(a_val.0.cell(), b_val.0.cell())?;
-                }
-                Ok(())
-            },
-        )
+        let config = self.config();
+        for (i, num_val) in num.iter().enumerate() {
+            layouter.constrain_instance(num_val.0.cell(), config.instance, start_index + i)?;
+        }
+        Ok(())
     }
 
     fn quarter_round(
@@ -532,9 +575,10 @@ impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
 
 #[derive(Default, Debug, Clone)]
 pub struct ChaCha20Circuit<F: Field> {
-    pub(crate) init_state: Vec<[Value<F>; BINARY_LENGTH]>,
+    pub(crate) constants: Vec<[F; BINARY_LENGTH]>,
+    pub(crate) keys: Vec<[Value<F>; BINARY_LENGTH]>,
+    pub(crate) nonces: Vec<[Value<F>; BINARY_LENGTH]>,
     pub(crate) plaintexts: Vec<[Value<F>; BINARY_LENGTH]>,
-    pub(crate) ciphertexts: Vec<[Value<F>; BINARY_LENGTH]>,
 }
 
 impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
@@ -542,7 +586,6 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
     type FloorPlanner = SimpleFloorPlanner;
 
     fn without_witnesses(&self) -> Self {
-        // Just outputs the default circuit if calling without witnesses
         Self::default()
     }
 
@@ -550,14 +593,17 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
         let advice_columns_vec: Vec<Column<Advice>> =
             (0..BINARY_LENGTH).map(|_| meta.advice_column()).collect();
 
-        // Convert the vector into an array
+        // Create advice columns
         let advice_columns: [Column<Advice>; BINARY_LENGTH] =
             advice_columns_vec.try_into().expect("Incorrect length");
 
-        // fixme: remove the below line?
-        let _instance = meta.instance_column();
+        // Create a fixed column to load constants.
+        let constant = meta.fixed_column();
 
-        ChaCha20Chip::configure(meta, advice_columns)
+        // Create a fixed column to load instance.
+        let instance = meta.instance_column();
+
+        ChaCha20Chip::configure(meta, advice_columns, instance, constant)
     }
 
     fn synthesize(
@@ -567,24 +613,42 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
     ) -> Result<(), Error> {
         let chacha20_chip = ChaCha20Chip::<F>::construct(config);
 
-        // Load private variable vectors & check if each digit is binary
-        let mut init_state = Vec::new();
-        for i in 0..STATE_LENGTH {
-            let input = chacha20_chip.load_private_and_check_binary(
-                layouter.namespace(|| "load init_state"),
-                self.init_state[i],
-            )?;
-            init_state.push(input);
+        // Load data into initial state, state = constants | key | counter | nonce
+        let mut state = Vec::new();
+
+        // Load the constant
+        for i in 0..CONSTANT_LENGTH {
+            let input = chacha20_chip
+                .load_constant(layouter.namespace(|| "load constants"), self.constants[i])?;
+            state.push(input.clone());
         }
 
-        let mut copy_init_state = Vec::new();
-        for i in 0..STATE_LENGTH {
-            let input = chacha20_chip.load_private_and_check_binary(
-                layouter.namespace(|| "load init_state"),
-                self.init_state[i],
-            )?;
-            copy_init_state.push(input);
+        // Load the key
+        for i in 0..KEY_LENGTH {
+            let input = chacha20_chip
+                .load_private_and_check_binary(layouter.namespace(|| "load key"), self.keys[i])?;
+            state.push(input.clone());
         }
+
+        // Load the counter, counter = 0
+        let zeros: [F; 32] = [F::ZERO; 32];
+        for _ in 0..1 {
+            let input =
+                chacha20_chip.load_constant(layouter.namespace(|| "load counter"), zeros)?;
+            state.push(input.clone());
+        }
+
+        // Load the nonce
+        for i in 0..NONCE_LENGTH {
+            let input = chacha20_chip.load_private_and_check_binary(
+                layouter.namespace(|| "load nonce"),
+                self.nonces[i],
+            )?;
+            state.push(input.clone());
+        }
+
+        // Copy the initial state to working state to compute the key stream
+        let mut working_state = state.clone();
 
         // Load private variable vectors & check if each digit is binary
         let mut plaintexts = Vec::new();
@@ -596,15 +660,6 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
             plaintexts.push(plaintext);
         }
 
-        let mut ciphertexts = Vec::new();
-        for i in 0..STATE_LENGTH {
-            let c = chacha20_chip.load_private_and_check_binary(
-                layouter.namespace(|| "load ciphertexts"),
-                self.ciphertexts[i],
-            )?;
-            ciphertexts.push(c);
-        }
-
         for _ in 0..10 {
             // todo: consider running parallel
             // Column rounds
@@ -614,7 +669,7 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
                 4,
                 8,
                 12,
-                &mut init_state,
+                &mut working_state,
             );
             let _ = chacha20_chip.quarter_round(
                 layouter.namespace(|| "quarter_round".to_string()),
@@ -622,7 +677,7 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
                 5,
                 9,
                 13,
-                &mut init_state,
+                &mut working_state,
             );
             let _ = chacha20_chip.quarter_round(
                 layouter.namespace(|| "quarter_round".to_string()),
@@ -630,7 +685,7 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
                 6,
                 10,
                 14,
-                &mut init_state,
+                &mut working_state,
             );
             let _ = chacha20_chip.quarter_round(
                 layouter.namespace(|| "quarter_round".to_string()),
@@ -638,7 +693,7 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
                 7,
                 11,
                 15,
-                &mut init_state,
+                &mut working_state,
             );
 
             // Diagonal rounds
@@ -648,7 +703,7 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
                 5,
                 10,
                 15,
-                &mut init_state,
+                &mut working_state,
             );
             let _ = chacha20_chip.quarter_round(
                 layouter.namespace(|| "quarter_round".to_string()),
@@ -656,7 +711,7 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
                 6,
                 11,
                 12,
-                &mut init_state,
+                &mut working_state,
             );
             let _ = chacha20_chip.quarter_round(
                 layouter.namespace(|| "quarter_round".to_string()),
@@ -664,7 +719,7 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
                 7,
                 8,
                 13,
-                &mut init_state,
+                &mut working_state,
             );
             let _ = chacha20_chip.quarter_round(
                 layouter.namespace(|| "quarter_round".to_string()),
@@ -672,30 +727,32 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
                 4,
                 9,
                 14,
-                &mut init_state,
+                &mut working_state,
             );
         }
 
         for i in 0..STATE_LENGTH {
-            init_state[i] = chacha20_chip.wrapping_add(
+            // state += working_state
+            state[i] = chacha20_chip.wrapping_add(
                 layouter.namespace(|| "wrapping add".to_string()),
-                init_state[i].clone(),
-                copy_init_state[i].clone(),
+                state[i].clone(),
+                working_state[i].clone(),
             )?;
 
-            init_state[i] = chacha20_chip.xor(
+            // encrypted_message += key_stream ^ plaintexts_block
+            state[i] = chacha20_chip.xor(
                 layouter.namespace(|| "xor".to_string()),
-                init_state[i].clone(),
+                state[i].clone(),
                 plaintexts[i].clone(),
             )?;
 
-            chacha20_chip.check_result(
-                layouter.namespace(|| "check result".to_string()),
-                init_state[i].clone(),
-                ciphertexts[i].clone(),
+            // check if encrypted_message =  ciphertext
+            chacha20_chip.expose_public(
+                layouter.namespace(|| "expose encrypted message".to_string()),
+                i * BINARY_LENGTH,
+                state[i].clone(),
             )?;
         }
-
         Ok(())
     }
 }
