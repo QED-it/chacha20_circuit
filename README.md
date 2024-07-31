@@ -5,5 +5,8 @@ This work solves a task that allows a prover to prove the knowledge of a message
 
 To test the circuit and draw the layout:
 ```bash
-cargo run
+cargo test
 ```
+
+Layout:
+![layout](layout.png)
