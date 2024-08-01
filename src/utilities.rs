@@ -99,7 +99,7 @@ pub fn create_circuit(
         constants,
         keys,
         nonces,
-        plaintexts,
+        padded_plaintexts: plaintexts,
     }
 }
 

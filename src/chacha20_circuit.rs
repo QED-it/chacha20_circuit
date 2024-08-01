@@ -246,6 +246,7 @@ impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
             || "assign private values and check binary",
             |mut region| {
                 // Check that each cell of the input is a binary value
+                // todo: if we don't pad plaintext to every 32-bit element, the binary check could check for unassigned cells for the last plaintext block. Is it possible to remove padding?
                 config.s_binary.enable(&mut region, 0)?;
 
                 values
@@ -537,7 +538,7 @@ impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
     ) -> Result<(), Error> {
         let config = self.config();
         for (i, vec_val) in vec.iter().enumerate() {
-            // todo: any smarter way to call the CIPHERTEXT_LENGTH?
+            // todo: any smarter way to call the CIPHERTEXT_LENGTH? Should this value be an input to the circuit or instance?
             // compare vec with every BINARY_LENGTH-bit ciphertexts
             if start_index < (CIPHERTEXT_LENGTH / 4) * BINARY_LENGTH //  For ciphertexts in the first complete blocks (each with BINARY_LENGTH bits).
                 || (start_index == (CIPHERTEXT_LENGTH / 4) * BINARY_LENGTH //  For ciphertexts in the last block (shorter than BINARY_LENGTH bits).
@@ -631,7 +632,7 @@ pub struct ChaCha20Circuit<F: Field> {
     pub(crate) constants: Vec<[F; BINARY_LENGTH]>,
     pub(crate) keys: Vec<[Value<F>; BINARY_LENGTH]>,
     pub(crate) nonces: Vec<[Value<F>; BINARY_LENGTH]>,
-    pub(crate) plaintexts: Vec<[Value<F>; BINARY_LENGTH]>,
+    pub(crate) padded_plaintexts: Vec<[Value<F>; BINARY_LENGTH]>,
 }
 
 impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
@@ -700,7 +701,7 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
         // Load private variable vectors & check if each digit is binary
         let mut plaintexts = Vec::new();
 
-        for p in self.plaintexts.clone() {
+        for p in self.padded_plaintexts.clone() {
             let plaintext = chacha20_chip
                 .load_private_and_check_binary(layouter.namespace(|| "load plaintexts"), p)?;
             plaintexts.push(plaintext);
