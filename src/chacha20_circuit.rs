@@ -1,6 +1,4 @@
-use crate::constants::{
-    BINARY_LENGTH, CONSTANT_LENGTH, KEY_LENGTH, NONCE_LENGTH, ROTATION_LENGTHS, STATE_LENGTH,
-};
+use crate::constants::{BINARY_LENGTH, CIPHERTEXT_LENGTH, ROTATION_LENGTHS};
 use halo2_proofs::plonk::{Fixed, Instance};
 use halo2_proofs::{
     arithmetic::Field,
@@ -52,6 +50,11 @@ trait Instructions<F: Field>: Chip<F> {
         b: Vec<Self::Num>,
     ) -> Result<Vec<Self::Num>, Error>;
 
+    fn serialize(
+        &self,
+        layouter: impl Layouter<F>,
+        values: Vec<Self::Num>,
+    ) -> Result<Vec<Self::Num>, Error>;
     // Check that elements in the vector num is equal to public inputs start from start_index.
     fn expose_public(
         &self,
@@ -482,6 +485,47 @@ impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
         )
     }
 
+    fn serialize(
+        &self,
+        mut layouter: impl Layouter<F>,
+        values: Vec<Self::Num>,
+    ) -> Result<Vec<Self::Num>, Error> {
+        let config = self.config();
+
+        layouter.assign_region(
+            || "serialize key stream".to_string(),
+            |mut region| {
+                let mut a = Vec::new();
+                let mut b = Vec::new();
+                let mut c = Vec::new();
+                let mut d = Vec::new();
+
+                for (i, cell) in values.iter().enumerate() {
+                    let v = cell
+                        .0
+                        .copy_advice(|| "v", &mut region, config.advice[i], 0)?;
+                    let rotate_result = v.value().map(|&v| v);
+                    let result_cell = region
+                        .assign_advice(|| "i-th value", config.advice[i], 1, || rotate_result)
+                        .map(Number)
+                        .unwrap();
+                    if i < 8 {
+                        a.push(result_cell);
+                    } else if i < 16 {
+                        b.push(result_cell);
+                    } else if i < 24 {
+                        c.push(result_cell);
+                    } else if i < 32 {
+                        d.push(result_cell);
+                    }
+                }
+                // serialized result = d || c || b || a , with 'left' starting from the l-th bit of the 'values'
+                let results: Vec<_> = [&d[..], &c[..], &b[..], &a[..]].concat();
+                Ok(results)
+            },
+        )
+    }
+
     // Check that elements in the vector num is equal to public inputs start from start_index.
     fn expose_public(
         &self,
@@ -491,7 +535,13 @@ impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
     ) -> Result<(), Error> {
         let config = self.config();
         for (i, num_val) in num.iter().enumerate() {
-            layouter.constrain_instance(num_val.0.cell(), config.instance, start_index + i)?;
+            // todo: any smarter way to call the CIPHERTEXT_LENGTH?
+            if start_index < (CIPHERTEXT_LENGTH / 4) * BINARY_LENGTH
+                || (start_index == (CIPHERTEXT_LENGTH / 4) * BINARY_LENGTH
+                    && i < (CIPHERTEXT_LENGTH % 4) * 8)
+            {
+                layouter.constrain_instance(num_val.0.cell(), config.instance, start_index + i)?;
+            }
         }
         Ok(())
     }
@@ -611,39 +661,33 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
         config: Self::Config,
         mut layouter: impl Layouter<F>,
     ) -> Result<(), Error> {
-        let chacha20_chip = ChaCha20Chip::<F>::construct(config);
+        let chacha20_chip = ChaCha20Chip::<F>::construct(config.clone());
 
         // Load data into initial state, state = constants | key | counter | nonce
         let mut state = Vec::new();
 
         // Load the constant
-        for i in 0..CONSTANT_LENGTH {
-            let input = chacha20_chip
-                .load_constant(layouter.namespace(|| "load constants"), self.constants[i])?;
+        for c in self.constants.clone() {
+            let input = chacha20_chip.load_constant(layouter.namespace(|| "load constants"), c)?;
             state.push(input.clone());
         }
 
         // Load the key
-        for i in 0..KEY_LENGTH {
+        for k in self.keys.clone() {
             let input = chacha20_chip
-                .load_private_and_check_binary(layouter.namespace(|| "load key"), self.keys[i])?;
+                .load_private_and_check_binary(layouter.namespace(|| "load key"), k)?;
             state.push(input.clone());
         }
 
         // Load the counter, counter = 0
         let zeros: [F; 32] = [F::ZERO; 32];
-        for _ in 0..1 {
-            let input =
-                chacha20_chip.load_constant(layouter.namespace(|| "load counter"), zeros)?;
-            state.push(input.clone());
-        }
+        let input = chacha20_chip.load_constant(layouter.namespace(|| "load counter"), zeros)?;
+        state.push(input.clone());
 
         // Load the nonce
-        for i in 0..NONCE_LENGTH {
-            let input = chacha20_chip.load_private_and_check_binary(
-                layouter.namespace(|| "load nonce"),
-                self.nonces[i],
-            )?;
+        for n in self.nonces.clone() {
+            let input = chacha20_chip
+                .load_private_and_check_binary(layouter.namespace(|| "load nonce"), n)?;
             state.push(input.clone());
         }
 
@@ -652,14 +696,17 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
 
         // Load private variable vectors & check if each digit is binary
         let mut plaintexts = Vec::new();
-        for i in 0..STATE_LENGTH {
-            let plaintext = chacha20_chip.load_private_and_check_binary(
-                layouter.namespace(|| "load plaintexts"),
-                self.plaintexts[i],
-            )?;
+
+        for p in self.plaintexts.clone() {
+            let plaintext = chacha20_chip
+                .load_private_and_check_binary(layouter.namespace(|| "load plaintexts"), p)?;
             plaintexts.push(plaintext);
         }
 
+        // Perform chacha20_encrypt(key, counter, nonce, plaintext) for a 64 bytes plaintext
+        // compute the key_stream, where encrypted_message += key_stream ^ plaintexts_block
+        let mut key_stream = state.clone();
+        let mut encrypted_message = plaintexts.clone();
         for _ in 0..10 {
             // todo: consider running parallel
             // Column rounds
@@ -731,7 +778,7 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
             );
         }
 
-        for i in 0..STATE_LENGTH {
+        for (i, p) in plaintexts.iter().enumerate() {
             // state += working_state
             state[i] = chacha20_chip.wrapping_add(
                 layouter.namespace(|| "wrapping add".to_string()),
@@ -739,20 +786,27 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
                 working_state[i].clone(),
             )?;
 
-            // encrypted_message += key_stream ^ plaintexts_block
-            state[i] = chacha20_chip.xor(
-                layouter.namespace(|| "xor".to_string()),
+            // key_stream = serialize(state)
+            key_stream[i] = chacha20_chip.serialize(
+                layouter.namespace(|| "serialize".to_string()),
                 state[i].clone(),
-                plaintexts[i].clone(),
+            )?;
+
+            // encrypted_message += key_stream ^ plaintexts_block
+            encrypted_message[i] = chacha20_chip.xor(
+                layouter.namespace(|| "xor".to_string()),
+                key_stream[i].clone(),
+                p.clone(),
             )?;
 
             // check if encrypted_message =  ciphertext
             chacha20_chip.expose_public(
                 layouter.namespace(|| "expose encrypted message".to_string()),
                 i * BINARY_LENGTH,
-                state[i].clone(),
+                encrypted_message[i].clone(),
             )?;
         }
+
         Ok(())
     }
 }

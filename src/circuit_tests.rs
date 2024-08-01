@@ -38,7 +38,8 @@ pub fn run_chacha20_circuit_example(
 #[cfg(test)]
 mod tests {
     use crate::circuit_tests::run_chacha20_circuit_example;
-    use crate::utilities::{u32_to_binary, u8_to_u32};
+    use crate::constants::CIPHERTEXT_LENGTH;
+    use crate::utilities::{pad_u8_vec, u8_to_32bit_binary, u8_to_binary};
     use chacha20::cipher::{KeyIvInit, StreamCipher};
     use chacha20::ChaCha20;
     use rand::Rng;
@@ -48,93 +49,101 @@ mod tests {
     fn round_trip() {
         let mut rng = OsRng;
 
+        // The following key, nonce and plaintext can be replaced by custom generated values
         // sample a random key
-        let mut init_key = [0u8; 32];
-        rng.fill(&mut init_key);
-        let key = u8_to_u32::<16>(&init_key);
+        let mut key = [0u8; 32];
+        rng.fill(&mut key);
 
         // sample a random nonce
-        let mut init_nonce = [0u8; 12];
-        rng.fill(&mut init_nonce);
-        let nonce: [u32; 3] = u8_to_u32::<3>(&init_nonce);
+        let mut nonce = [0u8; 12];
+        rng.fill(&mut nonce);
 
         // sample a random plaintext
-        let mut init_plaintext = [0u8; 64];
-        rng.fill(&mut init_plaintext);
-        let plaintext: [u32; 16] = u8_to_u32::<16>(&init_plaintext);
+        let mut plaintext = [0u8; CIPHERTEXT_LENGTH];
+        rng.fill(&mut plaintext[..]);
 
         // Compute a ciphertext from the external chacha20 encryption (default counter = 0)
-        let mut cipher = ChaCha20::new(&init_key.into(), &init_nonce.into());
-        let mut buffer = init_plaintext.clone();
+        let mut cipher = ChaCha20::new(&key.into(), &nonce.into());
+        let mut ciphertext = plaintext.clone();
         // apply keystream (encrypt)
-        cipher.apply_keystream(&mut buffer);
-        let ciphertext: [u32; 16] = u8_to_u32::<16>(&buffer);
+        cipher.apply_keystream(&mut ciphertext);
 
-        let key_vectors: Vec<Vec<bool>> = u32_to_binary(&key);
-        let nonce_vectors: Vec<Vec<bool>> = u32_to_binary(&nonce);
-        let plaintext_vectors: Vec<Vec<bool>> = u32_to_binary(&plaintext);
-        let ciphertext_vectors: Vec<Vec<bool>> = u32_to_binary(&ciphertext);
+        let block: usize = (CIPHERTEXT_LENGTH + 3) / 4;
+
+        let key_vectors: Vec<Vec<bool>> = u8_to_32bit_binary(&key, 8, true);
+        let nonce_vectors: Vec<Vec<bool>> = u8_to_32bit_binary(&nonce, 3, true);
+        let padded_plaintext_vectors: Vec<Vec<bool>> = u8_to_32bit_binary(&plaintext, block, false);
+        let ciphertext_vectors: Vec<Vec<bool>> = u8_to_binary(&ciphertext);
 
         // Run mock prover
-        //run_chacha20_circuit_example("mock_prover".to_string(), key_vectors.clone(), nonce_vectors.clone(), plaintext_vectors.clone(), ciphertext_vectors.clone());
+        run_chacha20_circuit_example(
+            "mock_prover".to_string(),
+            key_vectors.clone(),
+            nonce_vectors.clone(),
+            padded_plaintext_vectors.clone(),
+            ciphertext_vectors.clone(),
+        );
 
         // Run plonk prover
         run_chacha20_circuit_example(
             "plonk_prover".to_string(),
             key_vectors.clone(),
             nonce_vectors.clone(),
-            plaintext_vectors.clone(),
+            padded_plaintext_vectors.clone(),
             ciphertext_vectors.clone(),
         );
+
         run_chacha20_circuit_example(
             "visualization".to_string(),
-            key_vectors,
-            nonce_vectors,
-            plaintext_vectors,
-            ciphertext_vectors,
+            key_vectors.clone(),
+            nonce_vectors.clone(),
+            padded_plaintext_vectors.clone(),
+            ciphertext_vectors.clone(),
         );
     }
+
     #[test]
     fn negative_test() {
         let mut rng = OsRng;
 
+        // The following key, nonce and plaintext can be replaced by custom generated values
         // sample a random key
-        let mut init_key = [0u8; 32];
-        rng.fill(&mut init_key);
+        let mut key = [0u8; 32];
+        rng.fill(&mut key);
 
         // sample a random nonce
-        let mut init_nonce = [0u8; 12];
-        rng.fill(&mut init_nonce);
+        let mut nonce = [0u8; 12];
+        rng.fill(&mut nonce);
 
         // sample a random plaintext
-        let mut init_plaintext = [0u8; 64];
-        rng.fill(&mut init_plaintext);
+        let mut plaintext = [0u8; 64];
+        rng.fill(&mut plaintext[..]);
 
         // Compute a ciphertext from the external chacha20 encryption (default counter = 0)
-        let mut cipher = ChaCha20::new(&init_key.into(), &init_nonce.into());
-        let mut buffer = init_plaintext.clone();
+        let mut cipher = ChaCha20::new(&key.into(), &nonce.into());
+        let mut ciphertext = plaintext.clone();
         // apply keystream (encrypt)
-        cipher.apply_keystream(&mut buffer);
-        let ciphertext: [u32; 16] = u8_to_u32::<16>(&buffer);
+        cipher.apply_keystream(&mut ciphertext);
 
         // Fake witness generation for negative test
         // Simulate the case where an adversary cannot fake a valid proof without the knowledge of the real witness values
-        let mut fake_init_key = [0u8; 32];
-        rng.fill(&mut fake_init_key);
-        let fake_key = u8_to_u32::<8>(&fake_init_key);
+        // sample a random key
+        let mut fake_key = [0u8; 32];
+        rng.fill(&mut fake_key);
 
-        let mut fake_init_nonce = [0u8; 12];
-        rng.fill(&mut fake_init_nonce);
-        let fake_nonce: [u32; 3] = u8_to_u32::<3>(&fake_init_nonce);
+        // sample a random nonce
+        let mut fake_nonce = [0u8; 12];
+        rng.fill(&mut fake_nonce);
 
-        let mut fake_init_plaintext = [0u8; 64];
-        rng.fill(&mut fake_init_plaintext);
-        let fake_plaintext: [u32; 16] = u8_to_u32::<16>(&fake_init_plaintext);
+        // sample a random plaintext
+        let mut fake_plaintext = [0u8; 64];
+        rng.fill(&mut fake_plaintext[..]);
 
-        let fake_key_vectors: Vec<Vec<bool>> = u32_to_binary(&fake_key);
-        let fake_nonce_vectors: Vec<Vec<bool>> = u32_to_binary(&fake_nonce);
-        let fake_plaintext_vectors: Vec<Vec<bool>> = u32_to_binary(&fake_plaintext);
-        let ciphertext_vectors: Vec<Vec<bool>> = u32_to_binary(&ciphertext);
+        let fake_key_vectors: Vec<Vec<bool>> = u8_to_32bit_binary(&fake_key, 8, true);
+        let fake_nonce_vectors: Vec<Vec<bool>> = u8_to_32bit_binary(&fake_nonce, 3, true);
+        let fake_plaintext_vectors: Vec<Vec<bool>> =
+            u8_to_32bit_binary(&pad_u8_vec(&fake_plaintext), 16, false);
+        let ciphertext_vectors: Vec<Vec<bool>> = u8_to_binary(&ciphertext);
 
         run_chacha20_circuit_example(
             "negative_test".to_string(),

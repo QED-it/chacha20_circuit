@@ -1,5 +1,5 @@
 use crate::chacha20_circuit::ChaCha20Circuit;
-use crate::constants::{BINARY_LENGTH, INIT_CONSTANTS};
+use crate::constants::INIT_CONSTANTS;
 use ff::Field;
 use halo2_proofs::circuit::Value;
 use halo2_proofs::dev::MockProver;
@@ -48,7 +48,7 @@ pub fn create_circuit(
     let constant_vectors: Vec<Vec<bool>> = u32_to_binary(&INIT_CONSTANTS);
 
     for c in constant_vectors {
-        let c_vec: [Fp; BINARY_LENGTH] = c
+        let c_vec = c
             .clone()
             .iter()
             .map(|f| Fp::from(*f))
@@ -60,7 +60,7 @@ pub fn create_circuit(
 
     let mut keys = Vec::new();
     for k in key {
-        let k_vec: [Value<Fp>; BINARY_LENGTH] = k
+        let k_vec = k
             .clone()
             .iter()
             .map(|f| Value::known(Fp::from(*f)))
@@ -72,7 +72,7 @@ pub fn create_circuit(
 
     let mut nonces = Vec::new();
     for n in nonce {
-        let n_vec: [Value<Fp>; BINARY_LENGTH] = n
+        let n_vec = n
             .clone()
             .iter()
             .map(|f| Value::known(Fp::from(*f)))
@@ -84,7 +84,7 @@ pub fn create_circuit(
     let mut plaintexts = Vec::new();
 
     for p in plaintext {
-        let p_vec: [Value<Fp>; BINARY_LENGTH] = p
+        let p_vec = p
             .clone()
             .iter()
             .map(|f| Value::known(Fp::from(*f)))
@@ -108,13 +108,8 @@ pub fn to_halo2_instance(ciphertext: Vec<Vec<bool>>) -> Vec<Fp> {
     let mut instance: Vec<Fp> = Vec::new();
 
     for c in ciphertext {
-        let c_vec: [Fp; BINARY_LENGTH] = c
-            .clone()
-            .iter()
-            .map(|f| Fp::from(*f))
-            .collect::<Vec<Fp>>()
-            .try_into()
-            .unwrap();
+        let c_vec: Vec<Fp> = c.clone().iter().map(|f| Fp::from(*f)).collect::<Vec<Fp>>();
+
         for i in c_vec {
             instance.push(i);
         }
@@ -225,6 +220,7 @@ pub fn run_plonk_prover(k: u32, circuit: &ChaCha20Circuit<Fp>, pub_input: Vec<Fp
 }
 
 /// data transformation
+// Converts an u32 slice to a vector of binary vectors.
 pub fn u32_to_binary(u32_vec: &[u32]) -> Vec<Vec<bool>> {
     // Convert each u32 to a binary vector
     u32_vec
@@ -238,12 +234,55 @@ pub fn u32_to_binary(u32_vec: &[u32]) -> Vec<Vec<bool>> {
         .collect()
 }
 
-pub fn u8_to_u32<const N: usize>(ciphertext: &[u8]) -> [u32; N] {
-    let mut u32s: [u32; N] = [0; N];
+// Converts an u8 slice to a vector of binary vectors.
+pub fn u8_to_binary(u8_vec: &[u8]) -> Vec<Vec<bool>> {
+    // Convert each u8 to a binary vector
+    u8_vec
+        .iter()
+        .map(|&num| {
+            format!("{:08b}", num) // Ensure each number is represented as an 8-bit binary string
+                .chars()
+                .map(|c| c.to_digit(2).expect("Should be a bool") != 0)
+                .collect()
+        })
+        .collect()
+}
 
-    // Convert every 4 bytes of the u8 array into a single u32 using little-endian format
-    for (i, chunk) in ciphertext.chunks(4).take(N).enumerate() {
-        u32s[i] = u32::from_le_bytes(chunk.try_into().expect("slice with incorrect size"));
+// Pads a u8 vector to ensure its length is a multiple of 4.
+pub fn pad_u8_vec(u8_vec: &[u8]) -> Vec<u8> {
+    let mut padded_u8_vec = Vec::from(u8_vec);
+
+    // If the length is not a multiple of 4, pad with zeros
+    if padded_u8_vec.len() % 4 != 0 {
+        let padding = 4 - (padded_u8_vec.len() % 4);
+        padded_u8_vec.extend(vec![0; padding]);
     }
-    u32s
+    padded_u8_vec
+}
+
+// Converts a u8 slice to a vector of binary vectors, with optional endianness.
+pub fn u8_to_32bit_binary(u8_vec: &[u8], n: usize, little_endian: bool) -> Vec<Vec<bool>> {
+    let padded_u8_vec = pad_u8_vec(u8_vec);
+
+    // Convert every four u8 to u32
+    let mut u32s = vec![0u32; n];
+
+    for (i, chunk) in padded_u8_vec.chunks(4).take(n).enumerate() {
+        let bytes: [u8; 4] = chunk.try_into().expect("slice with incorrect size");
+        u32s[i] = if little_endian {
+            u32::from_le_bytes(bytes)
+        } else {
+            u32::from_be_bytes(bytes)
+        };
+    }
+
+    // Convert each u32 to a binary vector
+    u32s.iter()
+        .map(|&num| {
+            format!("{:032b}", num) // Ensure each number is represented as a 32-bit binary string
+                .chars()
+                .map(|c| c.to_digit(10).expect("Should be a bool") != 0)
+                .collect()
+        })
+        .collect()
 }
