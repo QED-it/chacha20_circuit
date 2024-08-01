@@ -50,10 +50,11 @@ trait Instructions<F: Field>: Chip<F> {
         b: Vec<Self::Num>,
     ) -> Result<Vec<Self::Num>, Error>;
 
+    // Serialize the state to the key stream
     fn serialize(
         &self,
         layouter: impl Layouter<F>,
-        values: Vec<Self::Num>,
+        state: Vec<Self::Num>,
     ) -> Result<Vec<Self::Num>, Error>;
     // Check that elements in the vector num is equal to public inputs start from start_index.
     fn expose_public(
@@ -485,10 +486,11 @@ impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
         )
     }
 
+    // Serialize the state to the key stream
     fn serialize(
         &self,
         mut layouter: impl Layouter<F>,
-        values: Vec<Self::Num>,
+        state: Vec<Self::Num>,
     ) -> Result<Vec<Self::Num>, Error> {
         let config = self.config();
 
@@ -500,7 +502,7 @@ impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
                 let mut c = Vec::new();
                 let mut d = Vec::new();
 
-                for (i, cell) in values.iter().enumerate() {
+                for (i, cell) in state.iter().enumerate() {
                     let v = cell
                         .0
                         .copy_advice(|| "v", &mut region, config.advice[i], 0)?;
@@ -531,16 +533,17 @@ impl<F: Field> Instructions<F> for ChaCha20Chip<F> {
         &self,
         mut layouter: impl Layouter<F>,
         start_index: usize,
-        num: Vec<Self::Num>,
+        vec: Vec<Self::Num>,
     ) -> Result<(), Error> {
         let config = self.config();
-        for (i, num_val) in num.iter().enumerate() {
+        for (i, vec_val) in vec.iter().enumerate() {
             // todo: any smarter way to call the CIPHERTEXT_LENGTH?
-            if start_index < (CIPHERTEXT_LENGTH / 4) * BINARY_LENGTH
-                || (start_index == (CIPHERTEXT_LENGTH / 4) * BINARY_LENGTH
+            // compare vec with every BINARY_LENGTH-bit ciphertexts
+            if start_index < (CIPHERTEXT_LENGTH / 4) * BINARY_LENGTH //  For ciphertexts in the first complete blocks (each with BINARY_LENGTH bits).
+                || (start_index == (CIPHERTEXT_LENGTH / 4) * BINARY_LENGTH //  For ciphertexts in the last block (shorter than BINARY_LENGTH bits).
                     && i < (CIPHERTEXT_LENGTH % 4) * 8)
             {
-                layouter.constrain_instance(num_val.0.cell(), config.instance, start_index + i)?;
+                layouter.constrain_instance(vec_val.0.cell(), config.instance, start_index + i)?;
             }
         }
         Ok(())
