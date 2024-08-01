@@ -696,6 +696,7 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
         }
 
         // Copy the initial state to working state to compute the key stream
+        // todo: do we need copy constraint for the working_state?
         let mut working_state = state.clone();
 
         // Load private variable vectors & check if each digit is binary
@@ -712,7 +713,7 @@ impl<F: Field> Circuit<F> for ChaCha20Circuit<F> {
         let mut key_stream = state.clone();
         let mut encrypted_message = plaintexts.clone();
         for _ in 0..10 {
-            // todo: consider running parallel
+            // todo: consider running parallel, how?
             // Column rounds
             let _ = chacha20_chip.quarter_round(
                 layouter.namespace(|| "quarter_round".to_string()),
