@@ -1,5 +1,5 @@
 use crate::chacha20_circuit::ChaCha20Circuit;
-use crate::constants::INIT_CONSTANTS;
+use crate::constants::CONSTANTS;
 use ff::Field;
 use halo2_proofs::circuit::Value;
 use halo2_proofs::dev::MockProver;
@@ -43,9 +43,9 @@ pub fn create_circuit(
     plaintext: Vec<Vec<bool>>,
 ) -> ChaCha20Circuit<Fp> {
     // constant to the ChaCha20Circuit
-    // INIT_CONSTANTS is the constant used to set up the initial state
+    // CONSTANTS is the constant used to set up the initial state
     let mut constants = Vec::new();
-    let constant_vectors: Vec<Vec<bool>> = u32_to_binary(&INIT_CONSTANTS);
+    let constant_vectors: Vec<Vec<bool>> = u32_to_binary(&CONSTANTS);
 
     for c in constant_vectors {
         let c_vec = c

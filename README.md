@@ -3,9 +3,9 @@
 This repository contains the source code and necessary files to implement chacha20 circuit using Halo2. 
 This work solves a task that allows a prover to prove the knowledge of a message block m, while the message is given in an encrypted form.
 
-To test the circuit and draw the layout:
+To test the circuit, display the proof size and draw the layout:
 ```bash
-cargo test
+cargo test -- --nocapture
 ```
 
 Layout:

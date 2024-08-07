@@ -85,6 +85,7 @@ mod tests {
         );
 
         // Run plonk prover
+
         run_chacha20_circuit_example(
             "plonk_prover".to_string(),
             key_vectors.clone(),

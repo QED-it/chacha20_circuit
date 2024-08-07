@@ -908,6 +908,7 @@ dependencies = [
  "proptest",
  "rand",
  "rand_core",
+ "rayon",
  "reddsa",
  "serde",
  "serde_json",
