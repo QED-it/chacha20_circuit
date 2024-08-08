@@ -160,17 +160,11 @@ pub fn verify(
     params: &Params<EqAffine>,
     vk: &VerifyingKey<EqAffine>,
     pub_input: &Vec<Fp>,
-    proof: Vec<u8>,
+    proof: &[u8],
 ) {
     let strategy = SingleVerifier::new(params);
-    let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
-    match verify_proof(params, vk, strategy, &[&[pub_input]], &mut transcript) {
-        Ok(()) => println!("The statement is TRUE"),
-        Err(error) => {
-            println!("The statement is FALSE.");
-            println!("ERROR: {}", error);
-        }
-    }
+    let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(proof);
+    assert!(verify_proof(params, vk, strategy, &[&[pub_input]], &mut transcript).is_ok());
 }
 
 // Runs the mock prover and prints any errors
@@ -210,7 +204,7 @@ pub fn run_plonk_prover(k: u32, circuit: &ChaCha20Circuit<Fp>, pub_input: Vec<Fp
 
     // Verify proof
     let start_verify = Instant::now(); // Start timing
-    verify(&params, &vk, &pub_input, proof);
+    verify(&params, &vk, &pub_input, &proof);
     let duration_verify = start_verify.elapsed(); // Calculate elapsed time
     println!("Verification time: {:?}", duration_verify);
 
